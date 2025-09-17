@@ -64,6 +64,12 @@ kotlin {
             implementation(compose.components.uiToolingPreview)
             implementation(libs.androidx.lifecycle.viewmodelCompose)
             implementation(libs.androidx.lifecycle.runtimeCompose)
+            
+            // MVIKotlin
+            implementation(libs.mvikotlin)
+            implementation(libs.mvikotlin.main)
+            implementation(libs.mvikotlin.extensions.coroutines)
+            implementation(libs.mvikotlin.logging)
         }
         commonTest.dependencies {
             implementation(libs.kotlin.test)

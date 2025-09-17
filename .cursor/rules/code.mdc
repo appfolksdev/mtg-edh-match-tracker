@@ -1,0 +1,157 @@
+---
+alwaysApply: true
+---
+
+# Kotlin Code Style and Conventions
+
+## Formatting and Style
+
+### Trailing Commas
+- Add trailing commas in function parameter lists and calls
+- Add trailing commas in multi-line collections, function parameters, and when expressions
+
+### String Templates
+- Don't use curly braces when inserting a simple variable into a string template
+- Use curly braces only for longer expressions: `println("$name has ${children.size} children")`
+- Prefer string templates over string concatenation
+
+### Semicolons
+- Omit semicolons whenever possible
+- Only use semicolons when required by syntax
+
+## Source Code Organization
+
+### File Names
+- If a Kotlin file contains a single class or interface, name it the same as the class with `.kt` extension
+- For files with multiple classes or top-level declarations, use upper camel case describing the file contents
+- Avoid meaningless words like `Util` in file names
+
+### Multiplatform Projects
+- Platform-specific files should have suffixes: `Platform.android.kt`, `Platform.ios.kt`, `Platform.jvm.kt`
+- Common source set files should not have suffixes: `Platform.kt`
+
+### Class Layout Order
+1. Property declarations and initializer blocks
+2. Secondary constructors  
+3. Method declarations
+4. Companion object
+
+### Interface Implementation
+- Keep implementing members in the same order as the interface
+- Put overloads next to each other in a class
+
+## Naming Conventions
+
+### Packages and Classes
+- Package names are always lowercase without underscores: `org.example.project`
+- Class and object names use upper camel case: `DeclarationProcessor`
+- Interface names use upper camel case: `MyInterface`
+
+### Functions and Variables
+- Function, property, and local variable names start with lowercase and use camel case: `processDeclarations()`
+- Factory functions can have the same name as the return type: `fun Foo(): Foo`
+
+### Constants and Properties
+- Constants (const val) use SCREAMING_SNAKE_CASE: `const val MAX_COUNT = 8`
+- Top-level properties with immutable data use SCREAMING_SNAKE_CASE: `val USER_NAME_FIELD = "UserName"`
+- Properties holding objects with behavior use camel case: `val mutableCollection: MutableSet<String>`
+- Backing properties use underscore prefix: `private val _elementList`
+
+### Test Methods
+- Test method names can use backticks with spaces: `` `ensure everything works` ``
+- Underscores are allowed in test method names: `ensureEverythingWorks_onAndroid()`
+
+## Language Features and Best Practices
+
+### Immutability
+- Prefer `val` over `var` for variables that don't change after initialization
+- Use immutable collection interfaces (`Collection`, `List`, `Set`, `Map`) when collections won't be mutated
+- Prefer `listOf()` over `arrayListOf()` for immutable lists
+
+### Function Parameters
+- Prefer functions with default parameter values over overloaded functions
+- Use named arguments for multiple parameters of the same primitive type or Boolean parameters
+- Example: `drawSquare(x = 10, y = 10, width = 100, height = 100, fill = true)`
+
+### Control Flow
+- Prefer expression form of `try`, `if`, and `when`:
+  ```kotlin
+  return if (x) foo() else bar()
+  return when(x) { 0 -> "zero"; else -> "nonzero" }
+  ```
+
+### Conditional Statements
+- Use `if` for binary conditions, `when` for three or more options
+- For nullable Boolean values, use explicit checks: `if (value == true)` or `if (value == false)`
+- Use parentheses in `when` expressions with guard conditions
+
+### Loops and Higher-Order Functions
+- Prefer higher-order functions (`filter`, `map`) over loops when appropriate
+- Use regular `for` loop instead of `forEach` unless receiver is nullable or part of a longer call chain
+- Use `0..<n` operator for open-ended ranges instead of `0..n - 1`
+
+### Lambda Expressions
+- Use `it` convention for short, non-nested lambdas
+- Declare parameters explicitly in nested lambdas
+- Avoid multiple labeled returns in lambdas
+- Don't use labeled return for the last statement in a lambda
+
+### Extension Functions
+- Use extension functions liberally when a function works primarily on an object
+- Restrict visibility of extension functions to minimize API pollution
+- Prefer local, member, or private top-level extension functions when appropriate
+
+### Type Aliases
+- Define type aliases for functional types or types with parameters used multiple times:
+  ```kotlin
+  typealias MouseClickHandler = (Any, MouseEvent) -> Unit
+  typealias PersonIndex = Map<String, Person>
+  ```
+
+### Infix Functions
+- Declare as `infix` only when it works on two objects with similar roles
+- Good examples: `and`, `to`, `zip`
+- Don't use `infix` if it mutates the receiver object
+
+### Factory Functions
+- Avoid giving factory functions the same name as the class unless there's no special semantics
+- Prefer distinct names that clarify special behavior: `Point.fromPolar(angle, radius)`
+
+### Platform Types
+- Always explicitly declare Kotlin types for public functions/methods returning platform types
+- Always declare types for properties initialized with platform type expressions
+- Local values may optionally have type declarations
+
+## String Handling
+
+### Multiline Strings
+- Prefer multiline strings over embedding `\n` escape sequences
+- Use `trimIndent()` when no internal indentation is required
+- Use `trimMargin()` when internal indentation is required
+- Example:
+  ```kotlin
+  val text = """
+      Trimmed text
+      """.trimIndent()
+  ```
+
+## Documentation and Visibility
+
+### Library Development
+- Always explicitly specify member visibility
+- Always explicitly specify function return types and property types
+- Provide KDoc comments for all public members (except simple overrides)
+
+### Functions vs Properties
+Prefer a property over a function when the underlying algorithm:
+- Does not throw
+- Is cheap to calculate (or cached on first run)  
+- Returns the same result if object state hasn't changed
+
+## Unit Return Type
+- Omit `: Unit` return type for functions that don't return a value
+- Example: `fun foo() { }` instead of `fun foo(): Unit { }`
+
+## Redundant Constructs
+- Avoid redundant syntactic constructs highlighted by the IDE
+- Remove unnecessary elements even if they might seem to add "clarity"
