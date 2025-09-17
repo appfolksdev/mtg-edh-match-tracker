@@ -1,0 +1,749 @@
+---
+alwaysApply: false
+---
+
+# MVIKotlin State Management Patterns
+
+## Core MVI Principles
+- **Unidirectional Data Flow**: View → Intent → Store → State → View
+- **Single Source of Truth**: Store holds the complete state for a feature
+- **Immutable State**: State objects are immutable, use copy() for updates
+- **Pure Reducers**: State changes are predictable and testable
+- **Side Effects via Labels**: One-time events separate from persistent state
+- **Business Logic Isolation**: All business logic lives in stores, not UI
+
+## Essential Dependencies
+
+```kotlin
+val commonMain by getting {
+    dependencies {
+        implementation("com.arkivanov.mvikotlin:mvikotlin:3.0.0")
+        implementation("com.arkivanov.mvikotlin:mvikotlin-main:3.0.0")
+        implementation("com.arkivanov.mvikotlin:mvikotlin-extensions-coroutines:3.0.0")
+        implementation("com.arkivanov.mvikotlin:mvikotlin-logging:3.0.0") // Debug
+        implementation("com.arkivanov.mvikotlin:mvikotlin-timetravel:3.0.0") // Debug
+    }
+}
+```
+
+## Store Organization
+
+```
+shared/src/commonMain/kotlin/
+├── store/                    # MVIKotlin Stores
+│   ├── feature1/
+│   │   ├── Feature1Store.kt      # Store interface
+│   │   ├── Feature1StoreFactory.kt
+│   │   └── Feature1StoreProvider.kt
+│   └── shared/              # Shared store utilities
+└── [other layers]           # See @clean.mdc for full architecture
+```
+
+**Integration References:**
+- Full project structure: @clean.mdc
+- UI integration: @compose.mdc
+
+## MVIKotlin Component Implementation
+
+### 1. Store Interface Definition
+Always define a Store interface with clear contracts:
+```kotlin
+interface FeatureStore : Store<FeatureStore.Intent, FeatureStore.State, FeatureStore.Label> {
+    
+    sealed interface Intent {
+        data class UpdateInput(val text: String) : Intent
+        object Submit : Intent
+        object Refresh : Intent
+    }
+    
+    data class State(
+        val isLoading: Boolean = false,
+        val data: List<Item> = emptyList(),
+        val error: String? = null,
+        val inputText: String = ""
+    )
+    
+    sealed interface Label {
+        data class ShowMessage(val message: String) : Label
+        object NavigateBack : Label
+        data class NavigateToDetails(val id: Long) : Label
+    }
+}
+```
+
+### 2. Store Implementation Pattern
+Implement stores using StoreFactory pattern:
+```kotlin
+class FeatureStoreFactory(
+    private val storeFactory: StoreFactory,
+    private val repository: Repository,
+    private val coroutineContext: CoroutineContext = Dispatchers.Default
+) {
+    
+    fun create(): FeatureStore =
+        object : FeatureStore, Store<Intent, State, Label> by storeFactory.create(
+            name = "FeatureStore",
+            initialState = State(),
+            bootstrapper = BootstrapperImpl(),
+            executorFactory = ::ExecutorImpl,
+            reducer = ReducerImpl
+        ) {}
+    
+    private sealed interface Message {
+        data class DataLoaded(val items: List<Item>) : Message
+        data class LoadingStarted(val isLoading: Boolean) : Message
+        data class ErrorOccurred(val error: String) : Message
+        data class InputUpdated(val text: String) : Message
+    }
+    
+    private sealed interface Action {
+        object LoadInitialData : Action
+    }
+    
+    private inner class BootstrapperImpl : CoroutineBootstrapper<Action>() {
+        override fun invoke() {
+            dispatch(Action.LoadInitialData)
+        }
+    }
+    
+    private inner class ExecutorImpl : CoroutineExecutor<Intent, Action, State, Message, Label>(
+        mainContext = coroutineContext
+    ) {
+        override fun executeAction(action: Action) {
+            when (action) {
+                is Action.LoadInitialData -> loadData()
+            }
+        }
+        
+        override fun executeIntent(intent: Intent) {
+            when (intent) {
+                is Intent.UpdateInput -> dispatch(Message.InputUpdated(intent.text))
+                is Intent.Submit -> handleSubmit()
+                is Intent.Refresh -> loadData()
+            }
+        }
+        
+        private fun loadData() {
+            dispatch(Message.LoadingStarted(true))
+            scope.launch {
+                repository.getData()
+                    .onSuccess { data ->
+                        dispatch(Message.DataLoaded(data))
+                    }
+                    .onFailure { error ->
+                        dispatch(Message.ErrorOccurred(error.message ?: "Unknown error"))
+                        publish(Label.ShowMessage("Failed to load data"))
+                    }
+                dispatch(Message.LoadingStarted(false))
+            }
+        }
+        
+        private fun handleSubmit() {
+            val currentInput = state().inputText
+            if (currentInput.isNotBlank()) {
+                scope.launch {
+                    repository.submitData(currentInput)
+                        .onSuccess {
+                            dispatch(Message.InputUpdated(""))
+                            publish(Label.ShowMessage("Submitted successfully"))
+                            loadData() // Refresh data
+                        }
+                        .onFailure { error ->
+                            publish(Label.ShowMessage(error.message ?: "Submission failed"))
+                        }
+                }
+            } else {
+                publish(Label.ShowMessage("Input cannot be empty"))
+            }
+        }
+    }
+    
+    private object ReducerImpl : Reducer<State, Message> {
+        override fun State.reduce(message: Message): State =
+            when (message) {
+                is Message.DataLoaded -> copy(data = message.items, error = null)
+                is Message.LoadingStarted -> copy(isLoading = message.isLoading)
+                is Message.ErrorOccurred -> copy(error = message.error, isLoading = false)
+                is Message.InputUpdated -> copy(inputText = message.text)
+            }
+    }
+}
+```
+
+### 3. Store Provider Pattern
+Create a provider for dependency injection:
+```kotlin
+class FeatureStoreProvider(
+    private val storeFactory: StoreFactory,
+    private val repository: Repository
+) {
+    private var store: FeatureStore? = null
+    
+    fun provide(): FeatureStore {
+        return store ?: FeatureStoreFactory(
+            storeFactory = storeFactory,
+            repository = repository
+        ).create().also { store = it }
+    }
+    
+    fun dispose() {
+        store?.dispose()
+        store = null
+    }
+}
+```
+
+## Best Practices
+
+### State Management
+1. Keep state flat and normalized - avoid deeply nested structures
+2. Use sealed classes for finite state representations
+3. Store only UI-relevant data in State, not raw API responses
+4. Prefer computed properties over storing derived values:
+```kotlin
+data class State(
+    val items: List<Item> = emptyList(),
+    val filter: Filter = Filter.All
+) {
+    val filteredItems: List<Item>
+        get() = when (filter) {
+            Filter.All -> items
+            Filter.Active -> items.filter { !it.isCompleted }
+            Filter.Completed -> items.filter { it.isCompleted }
+        }
+}
+```
+
+### Error Handling
+1. Always handle errors in Executors, never let them crash the app
+2. Use try-catch blocks or Result types for safe operations
+3. Emit error messages via Labels for one-time notifications
+4. Store persistent error states in State for UI display:
+```kotlin
+private fun loadDataSafely() {
+    scope.launch {
+        try {
+            val data = repository.getData()
+            dispatch(Message.DataLoaded(data))
+        } catch (e: Exception) {
+            when (e) {
+                is NetworkException -> {
+                    dispatch(Message.ErrorOccurred("Network error"))
+                    publish(Label.ShowRetryDialog)
+                }
+                is AuthException -> {
+                    publish(Label.NavigateToLogin)
+                }
+                else -> {
+                    dispatch(Message.ErrorOccurred("Unknown error"))
+                    // Log to crashlytics
+                }
+            }
+        }
+    }
+}
+```
+
+### Performance Optimization
+1. Use `@Parcelize` for Android State classes when needed
+2. Implement custom equality checks for complex state objects
+3. Debounce rapid intent dispatches (e.g., text input):
+```kotlin
+private var searchJob: Job? = null
+
+private fun handleSearch(query: String) {
+    searchJob?.cancel()
+    searchJob = scope.launch {
+        delay(300) // Debounce
+        val results = repository.search(query)
+        dispatch(Message.SearchResults(results))
+    }
+}
+```
+
+### Testing Strategy
+1. Test Reducers with pure function tests - they should be deterministic
+2. Test Executors with mock repositories and coroutine test dispatchers
+3. Use StoreFactory.create() with test implementations
+4. Verify Label emissions for navigation and one-off events:
+```kotlin
+@Test
+fun `test reducer updates state correctly`() {
+    val initialState = State()
+    val message = Message.DataLoaded(listOf(item1, item2))
+    val newState = ReducerImpl.run { initialState.reduce(message) }
+    
+    assertEquals(2, newState.data.size)
+    assertFalse(newState.isLoading)
+}
+
+@Test
+fun `test executor emits correct labels`() = runTest {
+    val labels = mutableListOf<Label>()
+    val store = createTestStore(labelObserver = { labels.add(it) })
+    
+    store.accept(Intent.Submit)
+    advanceUntilIdle()
+    
+    assertTrue(labels.any { it is Label.ShowMessage })
+}
+```
+
+## Compose Integration Patterns
+
+### Core Store-Compose Integration
+```kotlin
+@Composable
+fun FeatureScreen(
+    store: FeatureStore,
+    onNavigate: (String) -> Unit
+) {
+    val state by store.stateFlow.collectAsState()
+    
+    // Handle one-time events (Labels)
+    DisposableEffect(store) {
+        val labelDisposable = store.labels { label ->
+            when (label) {
+                is Label.NavigateBack -> onNavigate("back")
+                is Label.ShowMessage -> { /* Handle snackbar */ }
+            }
+        }
+        onDispose { labelDisposable.dispose() }
+    }
+    
+    // Render UI based on state
+    FeatureContent(
+        state = state,
+        onIntent = store::accept  // Pass intents to store
+    )
+}
+
+@Composable
+private fun FeatureContent(
+    state: FeatureStore.State,
+    onIntent: (FeatureStore.Intent) -> Unit
+) {
+    // UI implementation - see @compose.mdc for patterns
+    when {
+        state.isLoading -> LoadingIndicator()
+        state.error != null -> ErrorContent(
+            error = state.error,
+            onRetry = { onIntent(Intent.Refresh) }
+        )
+        else -> DataContent(
+            data = state.data,
+            onItemClick = { id -> onIntent(Intent.SelectItem(id)) }
+        )
+    }
+}
+```
+
+**Detailed UI Patterns**: See @compose.mdc
+
+### Store Lifecycle in Navigation
+```kotlin
+@Composable
+fun AppNavigation(appContainer: AppContainer) {
+    val navController = rememberNavController()
+    
+    NavHost(navController, startDestination = "home") {
+        composable("home") {
+            // Store lifecycle managed by navigation
+            val store = remember { appContainer.createHomeStore() }
+            
+            DisposableEffect(store) {
+                onDispose { store.dispose() } // Clean up store
+            }
+            
+            HomeScreen(
+                store = store,
+                onNavigate = navController::navigate
+            )
+        }
+    }
+}
+```
+
+**Navigation Patterns**: See @compose.mdc for detailed navigation implementation
+
+### Store Integration with Dependency Injection
+```kotlin
+class AppContainer {
+    // Store factory setup
+    private val storeFactory = DefaultStoreFactory()
+    
+    // Business dependencies (see @clean.mdc)
+    private val repository: ProductRepository = ...
+    
+    // Store creation methods
+    fun createFeatureStore(): FeatureStore {
+        return FeatureStoreFactory(
+            storeFactory = storeFactory,
+            repository = repository
+        ).create()
+    }
+}
+```
+
+**Platform Integration**: See @compose.mdc for platform-specific setup
+
+## Common Patterns
+
+### Multi-Store Composition
+For complex features, compose multiple stores:
+```kotlin
+class RootStore(
+    private val storeFactory: StoreFactory,
+    private val feature1StoreFactory: Feature1StoreFactory,
+    private val feature2StoreFactory: Feature2StoreFactory
+) {
+    val feature1Store = feature1StoreFactory.create()
+    val feature2Store = feature2StoreFactory.create()
+    
+    init {
+        // Connect stores if needed via Labels
+        feature1Store.labels { label ->
+            when (label) {
+                is Feature1Store.Label.DataUpdated -> {
+                    feature2Store.accept(Feature2Store.Intent.Refresh)
+                }
+            }
+        }
+    }
+}
+```
+
+### Pagination Pattern
+```kotlin
+data class State(
+    val items: List<Item> = emptyList(),
+    val isLoadingMore: Boolean = false,
+    val hasMorePages: Boolean = true,
+    val currentPage: Int = 0
+)
+
+sealed interface Intent {
+    object LoadNextPage : Intent
+}
+
+private fun loadNextPage() {
+    if (!state().isLoadingMore && state().hasMorePages) {
+        dispatch(Message.LoadingMore(true))
+        scope.launch {
+            val nextPage = state().currentPage + 1
+            repository.getPage(nextPage)
+                .onSuccess { pageData ->
+                    dispatch(Message.PageLoaded(
+                        items = pageData.items,
+                        hasMore = pageData.hasNext,
+                        page = nextPage
+                    ))
+                }
+        }
+    }
+}
+```
+
+### Form Validation Pattern
+```kotlin
+data class State(
+    val email: String = "",
+    val password: String = "",
+    val emailError: String? = null,
+    val passwordError: String? = null
+) {
+    val isValid: Boolean
+        get() = emailError == null && passwordError == null && 
+                email.isNotBlank() && password.isNotBlank()
+}
+
+private fun validateEmail(email: String) {
+    val error = when {
+        email.isBlank() -> "Email is required"
+        !email.contains("@") -> "Invalid email format"
+        else -> null
+    }
+    dispatch(Message.EmailValidated(email, error))
+}
+```
+
+## Compose-Specific MVIKotlin Patterns
+
+### State Hoisting with Stores
+```kotlin
+// Screen composable owns the store
+@Composable
+fun FeatureRoute(
+    appContainer: AppContainer,
+    onNavigateBack: () -> Unit
+) {
+    val store = remember { appContainer.createFeatureStore() }
+    
+    DisposableEffect(store) {
+        onDispose { store.dispose() }
+    }
+    
+    FeatureScreen(
+        store = store,
+        onNavigateBack = onNavigateBack
+    )
+}
+
+// Screen composable is stateless
+@Composable
+fun FeatureScreen(
+    store: FeatureStore,
+    onNavigateBack: () -> Unit
+) {
+    val state by store.stateFlow.collectAsState()
+    // UI implementation
+}
+```
+
+### Compose State vs Store State
+```kotlin
+@Composable
+fun FeatureScreen(store: FeatureStore) {
+    val state by store.stateFlow.collectAsState()
+    
+    // Local UI state (not business logic)
+    var showDialog by remember { mutableStateOf(false) }
+    var selectedTab by rememberSaveable { mutableStateOf(0) }
+    
+    // Store state for business logic
+    val businessData = state.data
+    val isLoading = state.isLoading
+    
+    // Mix both appropriately
+    if (showDialog) {
+        ConfirmationDialog(
+            onConfirm = { 
+                store.accept(Intent.Delete(businessData[selectedTab].id))
+                showDialog = false
+            },
+            onDismiss = { showDialog = false }
+        )
+    }
+}
+```
+
+### Optimized Recomposition
+```kotlin
+@Composable
+fun OptimizedFeatureScreen(store: FeatureStore) {
+    // Split state reads to minimize recomposition
+    val isLoading by store.stateFlow
+        .map { it.isLoading }
+        .distinctUntilChanged()
+        .collectAsState(initial = false)
+    
+    val items by store.stateFlow
+        .map { it.items }
+        .distinctUntilChanged()
+        .collectAsState(initial = emptyList())
+    
+    Column {
+        if (isLoading) {
+            LoadingIndicator()
+        }
+        
+        // Only this part recomposes when items change
+        ItemsList(
+            items = items,
+            onItemClick = { id ->
+                store.accept(Intent.SelectItem(id))
+            }
+        )
+    }
+}
+```
+
+### Advanced Store Patterns
+
+#### State Derivation and Side Effects
+```kotlin
+@Composable
+fun AdvancedStoreIntegration(store: FeatureStore) {
+    val state by store.stateFlow.collectAsState()
+    
+    // Optimized state reading - minimize recompositions
+    val isLoading by store.stateFlow
+        .map { it.isLoading }
+        .distinctUntilChanged()
+        .collectAsState(initial = false)
+    
+    // Handle Labels with proper cleanup
+    DisposableEffect(store) {
+        val disposable = store.labels { label ->
+            // Handle one-time events
+        }
+        onDispose { disposable.dispose() }
+    }
+    
+    // Reactive side effects based on state changes
+    LaunchedEffect(state.selectedId) {
+        state.selectedId?.let { id ->
+            // Perform side effects when selection changes
+        }
+    }
+}
+```
+
+### Testing Compose with MVIKotlin
+```kotlin
+class FeatureScreenTest {
+    @get:Rule
+    val composeTestRule = createComposeRule()
+    
+    private val testStore = TestFeatureStore()
+    
+    @Test
+    fun `clicking item dispatches intent`() {
+        composeTestRule.setContent {
+            FeatureScreen(
+                store = testStore,
+                onNavigateBack = {}
+            )
+        }
+        
+        // Arrange
+        testStore.setState(
+            State(items = listOf(Item(id = 1, name = "Test")))
+        )
+        
+        // Act
+        composeTestRule
+            .onNodeWithText("Test")
+            .performClick()
+        
+        // Assert
+        assertEquals(
+            Intent.SelectItem(1),
+            testStore.lastAcceptedIntent
+        )
+    }
+}
+```
+
+## Anti-Patterns to Avoid
+
+### MVIKotlin Anti-Patterns
+1. ❌ Don't store UI components or callbacks in State
+2. ❌ Don't perform async operations in Reducers
+3. ❌ Don't mutate State directly - always use copy()
+4. ❌ Don't store transient UI states (e.g., dialog visibility) if they can be derived
+5. ❌ Don't create massive monolithic stores - split by feature/domain
+6. ❌ Don't forget to dispose stores and cancel coroutines
+7. ❌ Don't emit Labels for state that should persist (use State instead)
+8. ❌ Don't perform business logic in the UI layer
+
+### Store Integration Anti-Patterns
+```kotlin
+// ❌ BAD: Creating stores in UI without proper lifecycle
+class BadPresenter {
+    val store = FeatureStoreFactory().create()  // No disposal!
+}
+
+// ✅ GOOD: Proper store lifecycle management
+class GoodPresenter {
+    private var store: FeatureStore? = null
+    
+    fun start() {
+        store = FeatureStoreFactory().create()
+    }
+    
+    fun stop() {
+        store?.dispose()
+        store = null
+    }
+}
+
+// ❌ BAD: Not disposing Label observers  
+val disposable = store.labels { label -> /* handle */ }
+// Forgotten disposal - memory leak!
+
+// ✅ GOOD: Always dispose Label observers
+val disposable = store.labels { label -> /* handle */ }
+// Later: disposable.dispose()
+
+// ❌ BAD: UI state mixed with business state
+data class BadState(
+    val products: List<Product>,    // Business state
+    val isDialogOpen: Boolean,     // UI state - belongs in UI layer!
+    val selectedTabIndex: Int      // UI state - belongs in UI layer!
+)
+
+// ✅ GOOD: Pure business state
+data class GoodState(
+    val products: List<Product>,
+    val selectedProductId: String?  // Business-relevant selection
+)
+```
+
+**UI-Specific Anti-Patterns**: See @compose.mdc
+
+## Debugging
+Enable MVIKotlin logging in debug builds:
+```kotlin
+if (BuildConfig.DEBUG) {
+    LoggingStoreFactory(DefaultStoreFactory())
+} else {
+    DefaultStoreFactory()
+}
+```
+
+Use TimeTravelStoreFactory for time-travel debugging:
+```kotlin
+val storeFactory = if (BuildConfig.DEBUG) {
+    TimeTravelStoreFactory()
+} else {
+    DefaultStoreFactory()
+}
+```
+
+## Migration Strategy
+When migrating existing code to MVIKotlin:
+1. Start with leaf features (no dependencies)
+2. Create Store interfaces first
+3. Move business logic from ViewModels to Executors
+4. Convert LiveData/StateFlow to Store.State
+5. Replace callbacks with Labels
+6. Test thoroughly before moving to next feature
+
+## MVIKotlin in Clean Architecture
+
+### MVI's Role in the Architecture
+```
+Domain Layer (Business Logic)
+    ↑
+Presentation Layer (MVIKotlin Stores)
+    ↑
+UI Layer (Compose/Platform UI)
+```
+
+### Data Flow Pattern
+```
+User Action → Intent → Store → Use Case → Repository
+               ↑         ↓
+            UI State ← Reducer ← Message
+```
+
+### Integration Points
+- **Stores** orchestrate business logic using **Use Cases** (@clean.mdc)
+- **UI** observes **Store State** and dispatches **Intents** (@compose.mdc)
+- **Labels** handle navigation and one-time side effects
+- **Dependency Injection** provides use cases to stores (@clean.mdc)
+
+## Key Benefits of MVIKotlin
+
+- **Predictable State**: Unidirectional flow makes state changes traceable
+- **Testable Logic**: Pure reducers and isolated business logic
+- **Time-Travel Debugging**: Built-in debugging capabilities
+- **Separation of Concerns**: Clear boundaries between UI and business logic
+- **Multiplatform**: Shared business logic across all platforms
+
+## References
+
+- **Clean Architecture**: @clean.mdc for use cases, repositories, and dependency injection
+- **UI Integration**: @compose.mdc for Compose patterns and best practices
+- **Business Logic**: Keep domain logic in use cases, orchestrate in stores

@@ -1,0 +1,495 @@
+---
+alwaysApply: false
+---
+
+# Clean Architecture for KMP
+
+## Core Principles
+- **Separation of Concerns**: Each layer has single responsibility
+- **Dependency Rule**: Dependencies point inward (UI→Presentation→Domain←Data)
+- **Testability**: Business logic independent of frameworks
+- **Framework Independence**: Core business logic isolated from external concerns
+- **Clean Code**: SRP, DRY, KISS, YAGNI, meaningful names, small functions
+
+## Architecture Layers
+
+### 1. Domain Layer (innermost)
+- **Pure Kotlin** - no external dependencies or frameworks
+- **Business Entities** - core data structures with business rules
+- **Use Cases** - application-specific business logic
+- **Repository Interfaces** - contracts for data access
+- **Domain Exceptions** - business rule violations and domain-specific errors
+
+### 2. Data Layer
+- **Repository Implementations** - concrete data access logic
+- **Data Sources** - API clients, database access, caching mechanisms
+- **Data Mappers** - convert between data formats (DTO↔Domain↔Entity)
+- **Data Models** - DTOs for APIs, entities for databases
+
+### 3. Presentation Layer
+- **State Management** - handle UI state and user interactions
+- **UI Models** - data structures optimized for presentation
+- **Presentation Mappers** - convert domain models to UI models
+- References: @mvi.mdc for MVIKotlin patterns, @compose.mdc for UI implementation
+
+## Project Structure
+
+```
+shared/src/commonMain/kotlin/com/app/
+├── domain/                    # Domain Layer (Pure Kotlin)
+│   ├── entity/               # Business Entities
+│   │   ├── Product.kt
+│   │   └── User.kt
+│   ├── usecase/              # Application Business Logic  
+│   │   ├── GetProductsUseCase.kt
+│   │   └── ValidateUserUseCase.kt
+│   ├── repository/           # Repository Contracts
+│   │   ├── ProductRepository.kt
+│   │   └── UserRepository.kt
+│   └── exception/            # Domain-Specific Errors
+│       └── DomainException.kt
+│
+├── data/                     # Data Layer
+│   ├── repository/           # Repository Implementations
+│   │   ├── ProductRepositoryImpl.kt
+│   │   └── UserRepositoryImpl.kt
+│   ├── datasource/
+│   │   ├── remote/          # Network/API Layer
+│   │   │   ├── api/         # API interfaces
+│   │   │   ├── dto/         # Data Transfer Objects
+│   │   │   └── client/      # HTTP clients
+│   │   └── local/           # Local Storage Layer
+│   │       ├── dao/         # Database Access Objects
+│   │       ├── entity/      # Database Entities
+│   │       └── cache/       # Caching mechanisms
+│   └── mapper/              # Data Mappers
+│       ├── ProductMapper.kt # DTO↔Entity↔Domain
+│       └── UserMapper.kt
+│
+├── presentation/            # Presentation Layer
+│   ├── model/              # UI Models
+│   ├── mapper/             # Domain→UI mappers  
+│   └── [state management]  # See @mvi.mdc, @compose.mdc
+│
+└── di/                     # Dependency Injection
+    └── AppModule.kt
+```
+
+## Domain Layer Implementation
+
+### Use Case Pattern
+```kotlin
+// Pure business logic, no framework dependencies
+class GetProductsUseCase(
+    private val repository: ProductRepository
+) {
+    suspend operator fun invoke(category: String? = null): Result<List<Product>> {
+        return repository.getProducts(category)
+            .map { products ->
+                // Business logic here
+                products.filter { it.isAvailable }
+                    .sortedBy { it.price }
+            }
+    }
+}
+```
+
+### Repository Interface
+```kotlin
+interface ProductRepository {
+    suspend fun getProducts(category: String?): Result<List<Product>>
+    suspend fun getProduct(id: String): Result<Product>
+    suspend fun addProduct(product: Product): Result<Unit>
+}
+```
+
+### Domain Exceptions
+```kotlin
+sealed class DomainException : Exception() {
+    object NetworkException : DomainException()
+    object UnauthorizedException : DomainException()
+    data class ValidationException(val field: String, val reason: String) : DomainException()
+    data class BusinessRuleException(val rule: String) : DomainException()
+}
+```
+
+## Data Layer Implementation
+
+### Repository Implementation
+```kotlin
+class ProductRepositoryImpl(
+    private val remoteDataSource: ProductRemoteDataSource,
+    private val localDataSource: ProductLocalDataSource,
+    private val mapper: ProductMapper
+) : ProductRepository {
+    
+    override suspend fun getProducts(category: String?): Result<List<Product>> {
+        return try {
+            // Network-first strategy with cache fallback
+            val remoteDtos = remoteDataSource.getProducts(category)
+            
+            // Cache for offline support
+            val entities = remoteDtos.map { mapper.dtoToEntity(it) }
+            localDataSource.insertProducts(entities)
+            
+            // Return domain models
+            Result.success(remoteDtos.map { mapper.dtoToDomain(it) })
+        } catch (e: Exception) {
+            // Fallback to cache
+            getCachedProducts(category)
+        }
+    }
+    
+    private suspend fun getCachedProducts(category: String?): Result<List<Product>> {
+        return try {
+            val entities = localDataSource.getProducts(category)
+            Result.success(entities.map { mapper.entityToDomain(it) })
+        } catch (e: Exception) {
+            Result.failure(DomainException.NetworkException)
+        }
+    }
+}
+```
+
+### Data Mapping Strategy
+```kotlin
+class ProductMapper {
+    // DTO (API) → Domain
+    fun dtoToDomain(dto: ProductDto): Product = Product(
+        id = ProductId(dto.id),
+        name = dto.name,
+        price = Money(dto.price, Currency.valueOf(dto.currency)),
+        isAvailable = dto.stock > 0
+    )
+    
+    // Entity (DB) → Domain  
+    fun entityToDomain(entity: ProductEntity): Product = Product(
+        id = ProductId(entity.id),
+        name = entity.name,
+        price = Money(entity.price, Currency.valueOf(entity.currency)),
+        isAvailable = entity.stock > 0
+    )
+    
+    // DTO → Entity (for caching)
+    fun dtoToEntity(dto: ProductDto): ProductEntity = ProductEntity(
+        id = dto.id,
+        name = dto.name,
+        price = dto.price,
+        currency = dto.currency,
+        stock = dto.stock,
+        lastUpdated = Clock.System.now()
+    )
+}
+```
+
+## Presentation Layer Integration
+
+The presentation layer coordinates between UI and business logic using the dependency rule:
+
+### Clean Architecture with State Management
+```kotlin
+// Presentation layer depends on domain abstractions, not implementations
+class FeaturePresenter(
+    private val getDataUseCase: GetDataUseCase,     // Domain dependency
+    private val validateInputUseCase: ValidateInputUseCase
+) {
+    // Presentation logic using domain use cases
+    suspend fun loadData(filter: String): Result<List<UiModel>> {
+        return getDataUseCase(filter)
+            .map { domainModels -> 
+                domainModels.map { it.toUiModel() } // Domain → UI mapping
+            }
+    }
+    
+    fun validateInput(input: String): ValidationResult {
+        return validateInputUseCase(input)
+    }
+}
+```
+
+**Integration with State Management:**
+- For MVIKotlin integration patterns: see @mvi.mdc
+- For Compose UI patterns: see @compose.mdc
+
+## Dependency Injection
+
+### Container Pattern with Compose
+```kotlin
+class AppContainer(platformModule: PlatformModule) {
+    // Data Layer Dependencies
+    private val networkService = platformModule.networkService
+    private val database = platformModule.database
+    
+    private val productApi = ProductApi(networkService)
+    private val productDao = database.productDao()
+    
+    private val remoteDataSource = ProductRemoteDataSource(productApi)
+    private val localDataSource = ProductLocalDataSource(productDao)
+    private val productMapper = ProductMapper()
+    
+    // Repository
+    val productRepository: ProductRepository = ProductRepositoryImpl(
+        remoteDataSource,
+        localDataSource,
+        productMapper
+    )
+    
+    // Use Cases
+    val getProductsUseCase = GetProductsUseCase(productRepository)
+    val addToCartUseCase = AddToCartUseCase(cartRepository, productRepository)
+    
+    // Presentation Layer
+    val productUiMapper = ProductUiMapper()
+    
+    // MVIKotlin Store Factory
+    val storeFactory = DefaultStoreFactory()
+    
+    // Store Creation
+    fun createProductStore() = ProductStoreFactory(
+        storeFactory,
+        getProductsUseCase,
+        addToCartUseCase,
+        productUiMapper
+    ).create()
+}
+```
+
+## Testing Strategy
+
+### Domain Layer Testing
+```kotlin
+class GetProductsUseCaseTest {
+    @Test
+    fun `should filter unavailable products`() = runTest {
+        // Arrange
+        val repository = mockk<ProductRepository>()
+        val products = listOf(
+            Product("1", "Available", isAvailable = true),
+            Product("2", "Unavailable", isAvailable = false)
+        )
+        coEvery { repository.getProducts(any()) } returns Result.success(products)
+        
+        // Act
+        val useCase = GetProductsUseCase(repository)
+        val result = useCase()
+        
+        // Assert
+        assertEquals(1, result.getOrNull()?.size)
+        assertEquals("Available", result.getOrNull()?.first()?.name)
+    }
+}
+```
+
+### Data Layer Testing
+```kotlin
+class ProductRepositoryTest {
+    @Test
+    fun `should cache remote data locally`() = runTest {
+        // Arrange
+        val remote = mockk<ProductRemoteDataSource>()
+        val local = mockk<ProductLocalDataSource>()
+        val mapper = ProductMapper()
+        
+        coEvery { remote.getProducts(any()) } returns listOf(productDto)
+        coEvery { local.insertProducts(any()) } just runs
+        
+        // Act
+        val repository = ProductRepositoryImpl(remote, local, mapper)
+        repository.getProducts(null)
+        
+        // Assert
+        coVerify { local.insertProducts(any()) }
+    }
+    
+    @Test
+    fun `should fallback to cache on network error`() = runTest {
+        // Arrange
+        val remote = mockk<ProductRemoteDataSource>()
+        val local = mockk<ProductLocalDataSource>()
+        
+        coEvery { remote.getProducts(any()) } throws IOException()
+        coEvery { local.getProducts(any()) } returns listOf(productEntity)
+        
+        // Act & Assert
+        val result = repository.getProducts(null)
+        assertTrue(result.isSuccess)
+    }
+}
+```
+
+### Presentation Layer Testing
+```kotlin
+class FeaturePresenterTest {
+    @Test
+    fun `should map domain models to UI models`() = runTest {
+        // Arrange
+        val useCase = mockk<GetDataUseCase>()
+        val domainModels = listOf(Product("1", "Test", 100.0))
+        coEvery { useCase(any()) } returns Result.success(domainModels)
+        
+        // Act
+        val presenter = FeaturePresenter(useCase)
+        val result = presenter.loadData("electronics")
+        
+        // Assert
+        val uiModels = result.getOrNull()
+        assertEquals("Test", uiModels?.first()?.name)
+        assertEquals("$100.00", uiModels?.first()?.formattedPrice)
+    }
+}
+```
+
+**Framework-Specific Testing:**
+- MVIKotlin store testing: see @mvi.mdc  
+- Compose UI testing: see @compose.mdc
+
+## Best Practices
+
+### 1. Layer Boundaries
+- Domain layer has NO external dependencies
+- Data layer depends only on domain interfaces
+- Presentation uses domain through use cases
+- Never skip layers (UI shouldn't call repositories directly)
+- Compose UI depends only on presentation layer (stores and UI models)
+
+### 2. Error Handling
+- Define domain-specific exceptions
+- Map data layer errors to domain exceptions
+- Handle errors appropriately at each layer
+- Show errors in UI via Labels (one-time) or State (persistent)
+
+### 3. Data Flow
+- Unidirectional: UI → Use Case → Repository → Data Source
+- Always return domain models from use cases
+- Map at layer boundaries
+- In Compose: View → Intent → Store → State → View
+
+### 4. Testing
+- Test each layer in isolation
+- Mock dependencies at layer boundaries
+- Focus on business logic testing in domain layer
+- Test Composables with createComposeRule()
+- Test stores with mock use cases
+
+### 5. UI Integration Guidelines
+- Keep UI layer **stateless** and focused on presentation
+- Use **UI models** not domain models in UI components
+- Handle UI events by calling presentation layer methods
+- Map domain errors to user-friendly UI messages
+- Separate UI logic from business logic
+- For specific UI framework patterns: see @compose.mdc
+
+## Anti-Patterns to Avoid
+
+❌ **Framework dependencies in domain**
+```kotlin
+// Bad: Android/iOS specific imports in domain
+import android.util.Log
+
+// Good: Pure Kotlin
+import kotlin.Result
+```
+
+❌ **Business logic outside domain**
+```kotlin
+// Bad: Logic in repository
+class ProductRepositoryImpl {
+    fun getDiscountedProducts() {
+        // Calculate discounts here
+    }
+}
+
+// Good: Logic in use case
+class GetDiscountedProductsUseCase {
+    operator fun invoke() {
+        // Business logic here
+    }
+}
+```
+
+❌ **Direct repository access from UI**
+```kotlin
+// Bad: Store using repository
+class ProductStore(private val repository: ProductRepository)
+
+// Good: Store using use case
+class ProductStore(private val getProductsUseCase: GetProductsUseCase)
+```
+
+❌ **Exposing data models to UI**
+```kotlin
+// Bad: Using DTO or Domain model directly in UI
+class ProductView(dto: ProductDto)     // DTO in UI layer
+class ProductView(product: Product)    // Domain model in UI layer
+
+// Good: Using UI model
+class ProductView(product: ProductUiModel)  // Presentation model
+```
+
+❌ **Business logic in UI layer**
+```kotlin
+// Bad: Business calculation in UI
+fun displayPrice(product: Product): String {
+    val discount = if (product.category == "electronics") 0.1 else 0.05
+    return "$${product.price * (1 - discount)}"  // Business logic!
+}
+
+// Good: Business logic in use case, formatting in mapper
+fun displayPrice(product: ProductUiModel): String {
+    return product.formattedDiscountedPrice  // Pre-calculated
+}
+```
+
+❌ **UI depending on concrete implementations**
+```kotlin
+// Bad: UI layer depending on data layer
+class ProductPresenter(private val productApi: ProductApi)  // Concrete dependency
+
+// Good: UI layer depending on domain abstractions  
+class ProductPresenter(private val repository: ProductRepository)  // Interface
+```
+
+## Migration to Clean Architecture
+
+### Step-by-Step Approach
+
+1. **Extract Domain Layer**
+   - Identify core business entities and rules
+   - Create pure Kotlin domain models
+   - Define repository interfaces
+   - Implement use cases with business logic
+
+2. **Implement Data Layer**
+   - Create repository implementations
+   - Separate remote and local data sources
+   - Add data mappers (DTO↔Entity↔Domain)
+   - Handle data layer errors appropriately
+
+3. **Refactor Presentation Layer**
+   - Create UI models from domain models
+   - Move business logic from UI to use cases
+   - Make presentation layer depend only on domain
+   - Apply chosen state management pattern
+
+4. **Set Up Dependency Injection**
+   - Create dependency container/module
+   - Wire layers following dependency rule
+   - Inject abstractions, not implementations
+
+5. **Add Comprehensive Tests**
+   - Unit test domain layer (business logic)
+   - Integration test data layer (repository contracts)
+   - Test presentation layer with mocked dependencies
+
+### Validation Checklist
+- ✅ Domain layer has no external dependencies
+- ✅ Data layer implements domain interfaces
+- ✅ Presentation layer uses domain through use cases
+- ✅ Dependencies point inward (toward domain)
+- ✅ Business logic is testable in isolation
+
+## References
+
+- **State Management**: @mvi.mdc for MVIKotlin patterns
+- **UI Implementation**: @compose.mdc for Compose Multiplatform
+- **Testing Strategies**: Framework-specific testing in respective .mdc files

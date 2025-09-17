@@ -1,0 +1,519 @@
+# Compose Multiplatform UI Patterns and Best Practices
+
+## Core Principles
+
+### 1. Composable Functions
+- **Always** annotate UI functions with `@Composable`
+- Composable functions should be **idempotent** - produce the same UI for the same inputs
+- Composable functions should be **side-effect free** - no business logic or state mutations directly in the composable
+- Use **PascalCase** naming convention for composable functions (e.g., `MyComposable()`)
+- Keep composables **small and focused** - each should have a single responsibility
+
+### 2. State Management
+
+#### Local UI State vs Business State
+- **Local UI State**: Dialog visibility, scroll position, form input focus
+- **Business State**: Data from APIs, user authentication, app-wide state
+- For business state patterns: see @mvi.mdc, @clean.mdc
+
+#### State Hoisting Pattern  
+- **Hoist state** to the lowest common ancestor that needs it
+- Pass state down and events up
+- Stateless composables are more reusable and testable
+
+```kotlin
+// Good - State hoisted
+@Composable
+fun Counter(
+    count: Int,
+    onIncrement: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Button(onClick = onIncrement, modifier = modifier) {
+        Text("Count: $count")
+    }
+}
+
+// Parent manages state
+@Composable
+fun CounterScreen() {
+    var count by remember { mutableStateOf(0) }
+    Counter(
+        count = count,
+        onIncrement = { count++ }
+    )
+}
+```
+
+#### State Holders
+- Use `remember` to preserve state across recompositions
+- Use `rememberSaveable` for state that should survive configuration changes
+- Wrap state in `mutableStateOf()` for observable state
+- Use `derivedStateOf` for computed values that depend on other state
+
+```kotlin
+// Observable state
+var showContent by remember { mutableStateOf(false) }
+
+// Computed state
+val isValid by remember {
+    derivedStateOf { 
+        username.isNotEmpty() && password.length >= 8 
+    }
+}
+```
+
+### 3. Modifiers
+
+#### Modifier Best Practices
+- **Always** provide a `modifier` parameter with default value `Modifier`
+- Apply the modifier parameter **first** in the chain
+- Order matters - modifiers are applied sequentially
+- Use semantic modifiers for accessibility
+
+```kotlin
+@Composable
+fun MyComponent(
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit
+) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(16.dp)
+            .background(Color.Blue)
+    ) {
+        content()
+    }
+}
+```
+
+### 4. Recomposition Optimization
+
+#### Performance Rules
+- **Avoid** creating objects in composables unless wrapped in `remember`
+- Use `key` parameter in lists to help Compose identify items
+- Mark stable classes with `@Stable` or `@Immutable` annotations
+- Use `LazyColumn`/`LazyRow` for large lists instead of `Column`/`Row`
+
+```kotlin
+// Use LazyColumn for lists
+LazyColumn {
+    items(
+        items = list,
+        key = { item -> item.id } // Provide stable keys
+    ) { item ->
+        ItemComposable(item)
+    }
+}
+```
+
+### 5. Side Effects
+
+#### Side Effect APIs
+- Use `LaunchedEffect` for suspend functions that should run when key changes
+- Use `rememberCoroutineScope` for event-driven coroutines
+- Use `DisposableEffect` for cleanup operations
+- Use `SideEffect` for non-suspend side effects that should run on every recomposition
+
+```kotlin
+@Composable
+fun MyScreen(userId: String) {
+    // Load data when userId changes
+    LaunchedEffect(userId) {
+        loadUserData(userId)
+    }
+    
+    // Cleanup when leaving composition
+    DisposableEffect(Unit) {
+        onDispose {
+            releaseResources()
+        }
+    }
+}
+```
+
+## Compose Multiplatform Specific
+
+### 6. Platform-Specific Code
+
+#### Project Structure
+```
+composeApp/
+├── src/
+│   ├── commonMain/        # Shared code
+│   │   └── kotlin/
+│   │       └── App.kt     # Common UI
+│   ├── androidMain/       # Android-specific
+│   │   └── kotlin/
+│   │       └── MainActivity.kt
+│   ├── iosMain/          # iOS-specific
+│   │   └── kotlin/
+│   │       └── MainViewController.kt
+│   ├── desktopMain/      # Desktop-specific
+│   │   └── kotlin/
+│   │       └── main.kt
+│   └── wasmJsMain/       # Web-specific
+│       └── kotlin/
+│           └── main.kt
+```
+
+#### Platform Launchers
+- **Android**: Use `ComponentActivity` with `setContent { App() }`
+- **iOS**: Use `ComposeUIViewController { App() }`
+- **Desktop**: Use `application { Window { App() } }`
+- **Web**: Use `ComposeViewport(document.body!!) { App() }`
+
+### 7. Resources
+
+#### Multiplatform Resources
+- Place resources in `commonMain/composeResources/`
+- Use `Res` object to access resources
+- Use `painterResource(Res.drawable.icon)` for images
+- Use `stringResource(Res.string.app_name)` for strings
+
+```kotlin
+@Composable
+fun MyImage() {
+    Image(
+        painter = painterResource(Res.drawable.compose_multiplatform),
+        contentDescription = stringResource(Res.string.image_description)
+    )
+}
+```
+
+### 8. Navigation
+
+#### Navigation Component
+- Use `NavController` for navigation in Compose
+- Define navigation graph with `NavHost`
+- Use type-safe navigation with serializable classes
+- Handle deep links and back stack properly
+
+```kotlin
+@Composable
+fun AppNavigation(navController: NavHostController) {
+    NavHost(
+        navController = navController,
+        startDestination = "home"
+    ) {
+        composable("home") { HomeScreen(navController) }
+        composable("details/{id}") { backStackEntry ->
+            DetailsScreen(
+                id = backStackEntry.arguments?.getString("id") ?: "",
+                navController = navController
+            )
+        }
+    }
+}
+```
+
+### 9. Material Design
+
+#### Material3 Theme
+- Use `MaterialTheme` as the root of your UI hierarchy
+- Customize colors, typography, and shapes
+- Support dynamic color on Android 12+
+- Implement proper dark/light theme support
+
+```kotlin
+@Composable
+fun App() {
+    MaterialTheme(
+        colorScheme = if (isSystemInDarkTheme()) {
+            darkColorScheme()
+        } else {
+            lightColorScheme()
+        }
+    ) {
+        // Your app content
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background
+        ) {
+            MainContent()
+        }
+    }
+}
+```
+
+### 10. Testing
+
+#### Always add composable previews on composable files for each composable state cases
+```kotlin
+@Preview(showBackground = true)
+@Composable
+fun MyComposablePreview() {
+    MyComposable(state = MyComposableState.Loading)
+}
+```
+
+#### Testing Best Practices
+- Use `createComposeRule()` for UI tests
+- Test composables in isolation
+- Use semantic properties for test identification
+- Mock dependencies and state holders
+
+```kotlin
+@Test
+fun counterTest() {
+    composeTestRule.setContent {
+        Counter(count = 5, onIncrement = {})
+    }
+    
+    composeTestRule
+        .onNodeWithText("Count: 5")
+        .assertExists()
+}
+```
+
+### 11. Accessibility
+
+#### Accessibility Guidelines
+- Add `contentDescription` to all images
+- Use `semantics` modifier for custom accessibility
+- Ensure proper touch target sizes (minimum 48dp)
+- Support screen readers and keyboard navigation
+
+```kotlin
+@Composable
+fun AccessibleButton(
+    onClick: () -> Unit,
+    text: String
+) {
+    Button(
+        onClick = onClick,
+        modifier = Modifier
+            .semantics { 
+                contentDescription = "Button: $text"
+            }
+            .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+    ) {
+        Text(text)
+    }
+}
+```
+
+## State Management Integration
+
+### 12. Business State in Compose
+
+#### State Observation Patterns
+- Use `collectAsState()` for observing Flows from state management
+- Use `remember` for local UI state that doesn't affect business logic
+- Keep business state separate from UI state
+
+```kotlin
+@Composable
+fun MyScreen(
+    businessStateFlow: StateFlow<BusinessState>  // From state management layer
+) {
+    val businessState by businessStateFlow.collectAsState()
+    var localUiState by remember { mutableStateOf(false) }  // Local UI state
+    
+    MyScreenContent(
+        businessState = businessState,
+        localUiState = localUiState,
+        onBusinessAction = { /* dispatch to state management */ },
+        onUiAction = { localUiState = it }
+    )
+}
+```
+
+**State Management Patterns:**
+- MVIKotlin integration: see @mvi.mdc
+- Clean Architecture: see @clean.mdc
+
+### 13. Dependency Provision in Compose
+
+#### CompositionLocal for UI Dependencies
+- Use CompositionLocal for UI-specific dependencies (theming, image loading)
+- Avoid passing business logic dependencies through CompositionLocal
+- For app-wide DI patterns: see @clean.mdc
+
+```kotlin
+val LocalImageLoader = staticCompositionLocalOf<ImageLoader> {
+    error("No ImageLoader provided")
+}
+
+@Composable
+fun ProvideImageLoader(
+    imageLoader: ImageLoader,
+    content: @Composable () -> Unit
+) {
+    CompositionLocalProvider(
+        LocalImageLoader provides imageLoader
+    ) {
+        content()
+    }
+}
+
+@Composable
+fun ImageComponent() {
+    val imageLoader = LocalImageLoader.current  // UI dependency
+    // Use imageLoader for UI operations
+}
+```
+
+## Performance Guidelines
+
+### 14. Optimization Techniques
+
+#### Key Optimizations
+- **Avoid unnecessary recompositions** - use stable parameters
+- **Defer reads** - use lambda parameters when possible
+- **Use remember wisely** - cache expensive computations
+- **Optimize lists** - use `LazyColumn` with stable keys
+- **Minimize composition scope** - break down large composables
+
+```kotlin
+// Defer state reads with lambda
+@Composable
+fun OptimizedComponent(
+    getText: () -> String  // Lambda defers read
+) {
+    Text(text = getText())
+}
+
+// Use stable keys in lists
+LazyColumn {
+    items(
+        items = items,
+        key = { it.id },  // Stable key
+        contentType = { it.type }  // Help Compose optimize
+    ) { item ->
+        ItemRow(item)
+    }
+}
+```
+
+### 15. Debugging
+
+#### Debugging Tools
+- Use Layout Inspector for UI debugging
+- Enable recomposition highlighting in developer options
+- Use `Modifier.border()` for layout debugging
+- Log recompositions with `SideEffect` for performance analysis
+
+```kotlin
+@Composable
+fun DebugComposable() {
+    SideEffect {
+        println("Recomposing DebugComposable")
+    }
+    
+    Box(
+        modifier = Modifier
+            .border(2.dp, Color.Red)  // Visual debugging
+    ) {
+        // Content
+    }
+}
+```
+
+## Code Style Guidelines
+
+### 16. Compose Code Style
+
+#### Formatting Rules
+- Place modifiers on separate lines for readability
+- Group related parameters together
+- Use trailing commas in parameter lists
+- Extract complex UI logic to separate functions
+
+```kotlin
+@Composable
+fun StyledComponent(
+    title: String,
+    description: String,
+    onAction: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp)
+            .clickable { onAction() },
+        elevation = CardDefaults.cardElevation(
+            defaultElevation = 4.dp,
+        ),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.headlineMedium,
+            )
+            Text(
+                text = description,
+                style = MaterialTheme.typography.bodyLarge,
+            )
+        }
+    }
+}
+```
+
+## Common Pitfalls to Avoid
+
+### 17. Anti-Patterns
+
+#### Common Compose Anti-Patterns
+- ❌ Don't perform heavy computations without `remember`
+- ❌ Don't create unstable lambdas in composables  
+- ❌ Don't use `var` for state without `mutableStateOf`
+- ❌ Don't mutate state directly in composables
+- ❌ Don't ignore accessibility requirements
+- ❌ Don't forget to handle configuration changes properly
+- ❌ Don't create state management objects inside composables
+- ❌ Don't skip testing your composables
+
+```kotlin
+// ❌ BAD - Creates new lambda on every recomposition
+Button(onClick = { onAction("submit") })  // New lambda each time
+
+// ✅ GOOD - Stable lambda reference or remember
+val onSubmit = remember { { onAction("submit") } }
+Button(onClick = onSubmit)
+
+// ❌ BAD - Heavy computation without remember
+val sorted = list.sortedBy { it.name }  // Recalculated on every recomposition
+
+// ✅ GOOD - Cached computation
+val sorted = remember(list) { 
+    list.sortedBy { it.name } 
+}
+
+// ❌ BAD - Creating business objects in composables
+@Composable
+fun BadScreen() {
+    val stateManager = StateManager()  // Created on every recomposition!
+}
+
+// ✅ GOOD - Inject from outside or use remember appropriately
+@Composable
+fun GoodScreen(stateManager: StateManager) {
+    // Injected dependency
+}
+```
+
+## Summary
+
+These Compose patterns and practices ensure:
+- **Predictable UI** - Declarative composables behave consistently  
+- **Performance** - Efficient recomposition and smooth animations
+- **Maintainability** - Modular, testable UI components
+- **Cross-platform compatibility** - Single UI codebase for all platforms
+- **Accessibility** - Inclusive user experiences across devices
+- **State Separation** - Clear distinction between UI and business state
+
+**Key Principle**: Compose is declarative - describe **what** the UI should look like, not **how** to change it.
+
+## Integration with Other Patterns
+
+- **State Management**: Use @mvi.mdc for business state patterns
+- **Architecture**: Follow @clean.mdc for layered architecture  
+- **Business Logic**: Keep in domain layer per @clean.mdc principles
+
+Remember: Compose handles UI presentation. Business logic belongs in dedicated layers.
